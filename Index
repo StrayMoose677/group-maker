@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>グループ分け（3-4人 / 4パターン）</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif; margin: 24px; line-height: 1.6; }
+    h1 { margin: 0 0 8px; }
+    textarea { width: 100%; max-width: 780px; min-height: 160px; }
+    .controls { margin: 12px 0 20px; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    button { padding: 8px 14px; border-radius: 8px; border: 1px solid #ccc; background: #f6f6f6; cursor: pointer; }
+    button:hover { background: #eee; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 12px; background: #fff; }
+    .muted { color: #666; font-size: 0.9em; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 0.9em; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .small { font-size: 0.9em; }
+    .right { margin-left: auto; }
+    .copy-btn { font-size: 0.85em; }
+  </style>
+</head>
+<body>
+  <h1>名前を入力して、グループ分け！</h1>
+  <p class="muted">一人一行で名前を入力してください（例：山田太郎↵佐藤花子↵…）。重複や空行は自動で除去します。</p>
+  <textarea id="names" placeholder="山田太郎
+佐藤花子
+..." spellcheck="false"></textarea>
+
+  <div class="controls">
+    <div class="row small">
+      <label>パターン数：</label>
+      <input type="number" id="patterns" value="4" min="1" max="10" style="width:60px" />
+    </div>
+    <button id="makeBtn">グループを作成</button>
+    <button id="clearBtn">入力をクリア</button>
+  </div>
+
+  <div id="result"></div>
+
+  <script>
+    // --- ユーティリティ ---
+    function uniqTrimmedNonEmptyNames(lines) {
+      const seen = new Set();
+      const out = [];
+      for (const raw of lines) {
+        const n = raw.trim();
+        if (!n) continue;
+        const key = n; // 大文字小文字区別したい場合はそのまま
+        if (!seen.has(key)) { seen.add(key); out.push(n); }
+      }
+      return out;
+    }
+
+    // Fisher–Yates shuffle（均等シャッフル）
+    function shuffleInPlace(a) {
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    }
+
+    // 3人を最大化しつつ、3 or 4 だけで分割
+    // 可能な限り4人グループの数を最小にする（=3人を優先）
+    function splitInto3or4(names) {
+      const n = names.length;
+      if (n === 0) return [];
+      if (n < 3) {
+        // 3未満は単独グループとして返す（要件外ケースの救済）
+        return [names.slice()];
+      }
+
+      // 4人グループの数kを最小化して、(n - 4k)が3で割り切れるkを探す
+      let k = -1;
+      for (let cand = 0; cand <= Math.floor(n / 4); cand++) {
+        if ((n - 4 * cand) % 3 === 0) { k = cand; break; }
+      }
+      if (k === -1) {
+        // どうしても無理な稀なケース（n=1,2,5など）を救済
+        // 3,4以外を作らないという厳密条件を外し、最後のグループだけ2や5を許容
+        const gs = [];
+        let i = 0;
+        while (i < n) {
+          const remain = n - i;
+          if (remain === 5) { gs.push(names.slice(i, i + 3)); i += 3; gs.push(names.slice(i, i + 2)); i += 2; }
+          else if (remain >= 4) { gs.push(names.slice(i, i + 4)); i += 4; }
+          else if (remain >= 3) { gs.push(names.slice(i, i + 3)); i += 3; }
+          else { gs.push(names.slice(i, n)); break; }
+        }
+        return gs;
+      }
+
+      const groups = [];
+      let idx = 0;
+      const threes = (n - 4 * k) / 3;
+
+      for (let i = 0; i < threes; i++) {
+        groups.push(names.slice(idx, idx + 3)); idx += 3;
+      }
+      for (let i = 0; i < k; i++) {
+        groups.push(names.slice(idx, idx + 4)); idx += 4;
+      }
+      return groups;
+    }
+
+    // グループ集合をカノニカル化して文字列に（重複検出用）
+    function canonicalKey(groups) {
+      const sortedMembers = groups.map(g => g.slice().sort((a,b)=>a.localeCompare(b)));
+      const sortedGroups = sortedMembers.sort((a,b)=>a[0].localeCompare(b[0]));
+      return JSON.stringify(sortedGroups);
+    }
+
+    // 1パターン生成（均等シャッフル→3/4分割）
+    function generateOnePattern(names) {
+      const arr = names.slice();
+      shuffleInPlace(arr);
+      return splitInto3or4(arr);
+    }
+
+    // 複数パターン生成（重複を避けつつ最大attempts内で）
+    function generatePatterns(names, count = 4, attempts = 200) {
+      const out = [];
+      const seen = new Set();
+      let tries = 0;
+      while (out.length < count && tries < attempts) {
+        const g = generateOnePattern(names);
+        const key = canonicalKey(g);
+        if (!seen.has(key)) { seen.add(key); out.push(g); }
+        tries++;
+      }
+      return out;
+    }
+
+    function renderPatterns(patterns) {
+      const container = document.getElementById("result");
+      if (patterns.length === 0) { container.innerHTML = "<p>結果はありません。</p>"; return; }
+
+      // テキスト出力（コピー用）も作る
+      const allTxt = [];
+      const grid = document.createElement("div");
+      grid.className = "grid";
+
+      patterns.forEach((groups, pIdx) => {
+        const card = document.createElement("div");
+        card.className = "card";
+        const title = document.createElement("div");
+        title.className = "row";
+        title.innerHTML = `<strong>パターン ${pIdx + 1}</strong><span class="muted">（グループ数：${groups.length}）</span>`;
+        const btn = document.createElement("button");
+        btn.className = "copy-btn right";
+        btn.textContent = "このパターンをコピー";
+        btn.onclick = () => {
+          const txt = toPlainText([groups]);
+          navigator.clipboard.writeText(txt).then(()=>{ btn.textContent="コピーしました！"; setTimeout(()=>btn.textContent="このパターンをコピー",1500); });
+        };
+        title.appendChild(btn);
+
+        const list = document.createElement("div");
+        groups.forEach((g, i) => {
+          const h = document.createElement("div");
+          h.innerHTML = `<div class="mono">Group ${i + 1} (${g.length})</div>`;
+          const ul = document.createElement("ul");
+          g.forEach(name => {
+            const li = document.createElement("li");
+            li.textContent = name;
+            ul.appendChild(li);
+          });
+          list.appendChild(h);
+          list.appendChild(ul);
+        });
+
+        card.appendChild(title);
+        card.appendChild(list);
+        grid.appendChild(card);
+
+        allTxt.push(toPlainText([groups]));
+      });
+
+      // 全部まとめてコピー
+      const wrap = document.createElement("div");
+      wrap.className = "row";
+      const allBtn = document.createElement("button");
+      allBtn.textContent = "全パターンをまとめてコピー";
+      allBtn.onclick = () => {
+        const txt = toPlainText(patterns);
+        navigator.clipboard.writeText(txt).then(()=>{ allBtn.textContent="コピーしました！"; setTimeout(()=>allBtn.textContent="全パターンをまとめてコピー",1500); });
+      };
+      wrap.appendChild(allBtn);
+
+      container.innerHTML = "";
+      container.appendChild(wrap);
+      container.appendChild(document.createElement("br"));
+      container.appendChild(grid);
+    }
+
+    function toPlainText(patterns) {
+      // patterns: [ [ [names], [names], ... ], ... ]
+      const parts = [];
+      patterns.forEach((groups, idx) => {
+        parts.push(`パターン ${idx + 1}`);
+        groups.forEach((g, i) => {
+          parts.push(`  Group ${i + 1} (${g.length})`);
+          g.forEach(n => parts.push(`    - ${n}`));
+        });
+        parts.push("");
+      });
+      return parts.join("\n");
+    }
+
+    // --- イベント ---
+    document.getElementById("makeBtn").addEventListener("click", () => {
+      const raw = document.getElementById("names").value.split("\n");
+      const names = uniqTrimmedNonEmptyNames(raw);
+      if (names.length === 0) {
+        alert("名前を1人以上入力してください。");
+        return;
+      }
+      const cnt = Math.min(Math.max(parseInt(document.getElementById("patterns").value || "4", 10), 1), 10);
+      const patterns = generatePatterns(names, cnt);
+      renderPatterns(patterns);
+    });
+
+    document.getElementById("clearBtn").addEventListener("click", () => {
+      document.getElementById("names").value = "";
+      document.getElementById("result").innerHTML = "";
+    });
+  </script>
+</body>
+</html>
